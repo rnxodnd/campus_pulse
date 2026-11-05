@@ -17,9 +17,9 @@ cd campus_pulse
 
 ## 프로젝트 소개
 
-5공학관 식당, 그린에너지관 10층 등 캠퍼스 내 특정 공간에 사람이 몰리면, 직접 방문한 뒤에야 이용하기 어렵다는 사실을 알게 됩니다.
+5공학관 식당에 사람이 몰리면, 직접 방문한 뒤에야 이용하기 어렵다는 사실을 알게 됩니다.
 
-Campus Pulse는 영상에서 **사람의 머리를 탐지해 관찰 구역의 인원을 추정**하고, 이를 웹에서 혼잡도로 보여주는 서비스입니다. 시간별 기록을 바탕으로 방문 시점을 안내하고, 이용 목적에 맞는 대체 장소를 추천하는 것을 목표로 합니다.
+Campus Pulse는 영상에서 **사람의 머리를 탐지해 관찰 구역의 인원을 추정**하고, 혼잡도 정보를 Android 앱으로 제공하는 서비스입니다. 현재 MVP는 5공학관 식당에 집중하며, 자리가 나면 앱 푸시 알림을 보내는 기능을 포함합니다.
 
 ## 주요 기능
 
@@ -29,7 +29,8 @@ Campus Pulse는 영상에서 **사람의 머리를 탐지해 관찰 구역의 �
 | --- | --- |
 | 머리 기반 인원 추정 | 영상에서 머리 영역을 탐지하고, 지정한 관찰 구역의 인원을 추정합니다. |
 | 실시간 혼잡도 계산 | 장소별 기준에 따라 현재 상태를 **여유 / 보통 / 포화**로 구분합니다. |
-| 웹 시각화 | 장소별 혼잡도와 갱신 시각을 표시하고, 혼잡도에 비례하는 사람 캐릭터 효과를 제공합니다. |
+| Android 앱 | 5공학관 식당의 혼잡도·좌석 현황·갱신 시각을 표시합니다. |
+| 자리 알림 | 사용자가 구독하면 포화에서 보통 또는 여유로 바뀔 때 Android 푸시 알림을 보냅니다. |
 | 방문 시간 예측 | 시간별 혼잡도 기록을 활용해 향후 혼잡도와 방문하기 좋은 시간대를 추정합니다. |
 | 대체 장소 추천 | 이용 목적과 장소별 혼잡도를 고려해 다른 공간을 안내합니다. |
 
@@ -46,12 +47,15 @@ flowchart LR
     A[영상 입력] --> B[머리 탐지]
     B --> C[관찰 구역 인원 추정]
     C --> D[현재 혼잡도 계산]
-    D --> E[웹 화면]
+    D --> E[Android 앱]
     D --> F[시간별 기록 저장]
     F --> G[향후 혼잡도 예측]
     G --> E
     D --> H[대체 장소 추천]
     H --> E
+    D --> I[포화에서 완화 상태로 변경]
+    I --> J[FCM 푸시 알림]
+    J --> E
 ```
 
 영상 입력 방식은 실제 CCTV 접근 가능 여부에 따라 결정합니다. 녹화 영상을 사용하는 경우에는 재생 영상 기반 결과임을 표시하고, 실시간 관측 결과와 구분합니다.
@@ -75,7 +79,7 @@ flowchart LR
 
 ## 개발 환경
 
-팀 공통 Python 버전은 **3.12**입니다. 아래 파일로 패키지 버전을 공유하며, 각자 자신의 컴퓨터에서 `.venv`를 생성합니다. 학습 방식과 웹 기술 스택은 별도로 확정할 예정입니다.
+팀 공통 Python 버전은 **3.12**입니다. 아래 파일로 패키지 버전을 공유하며, 각자 자신의 컴퓨터에서 `.venv`를 생성합니다. Android 앱 기술 세부사항은 별도로 확정할 예정입니다.
 
 | 구분 | 구성 | 용도 |
 | --- | --- | --- |
@@ -87,7 +91,7 @@ flowchart LR
 | 탐지 프레임워크 | Ultralytics 8.3.253 | YOLOv8 기반 모델 실험 |
 | 영상·수치 처리 | OpenCV 4.12.0.88, NumPy 2.2.6 | 프레임 추출 및 데이터 처리 |
 | 데이터 설정 | PyYAML 6.0.3 | 학습 데이터 YAML 생성·읽기 |
-| 웹·API 배포 | Cloudflare | 웹 화면 및 혼잡도 API 배포 예정 |
+| API·푸시 전송 | Cloudflare Workers, D1, Firebase Cloud Messaging | Android 앱용 현황 API 및 푸시 알림 |
 | 배포 도구 | Node.js 24, Wrangler 4.157.0 | Cloudflare 개발·배포 준비 |
 | 저장소 후보 | Cloudflare D1, R2 | 혼잡도 기록 및 파일 보관, 검토 중 |
 | 협업 | Git, GitHub | 소스 및 작업 관리 |
@@ -171,15 +175,15 @@ uv export --locked --format requirements-txt --no-dev --no-hashes --no-emit-proj
 
 ## Cloudflare 배포 준비
 
-학습은 **Mac의 Python 3.12 환경**에서 진행합니다. Cloudflare에는 웹 화면과 혼잡도 조회·수신 API를 배포할 계획입니다. Python 학습용 `requirements.txt`는 Cloudflare Worker의 배포 패키지 목록이 아닙니다.
+학습은 **Mac의 Python 3.12 환경**에서 진행합니다. Cloudflare Workers와 D1은 Android 앱용 혼잡도 API를 제공하고, Firebase Cloud Messaging은 자리 알림을 전송합니다. Python 학습용 `requirements.txt`는 Cloudflare Worker의 배포 패키지 목록이 아닙니다.
 
 권장 역할 분담은 다음과 같습니다. 저장소와 API 세부 구성은 아직 확정 전입니다.
 
 | 위치 | 역할 |
 | --- | --- |
 | Mac M4 | 모델 학습, 영상 추론, 인원·혼잡도 결과 생성 |
-| Cloudflare Pages 또는 Workers Static Assets | 웹 화면 제공 |
-| Cloudflare Workers | 분석 결과 수신 및 장소별 현황 API |
+| Android 앱 | 혼잡도 조회, 알림 구독 및 푸시 알림 표시 |
+| Cloudflare Workers | 분석 결과 수신, 현황·구독 API, FCM 푸시 전송 |
 | Cloudflare D1 — 권장 후보 | 장소, 관측 시각, 인원, 혼잡도 기록 |
 | Cloudflare R2 — 권장 후보 | 팀 공유용 영상·데이터셋·모델 파일 |
 
@@ -201,7 +205,7 @@ npm run cf:version
 npm run cf:login
 ```
 
-현재는 배포 도구만 준비한 상태이며, 웹 빌드 및 Worker 코드는 없습니다. 실제 배포 명령과 Cloudflare 설정은 코드와 대상 프로젝트가 확정된 후 추가합니다. 계정 토큰, `.dev.vars`, `.env`는 커밋하지 않습니다.
+혼잡도 API Worker 초안은 `backend/`에 있습니다. 로컬 실행, D1 마이그레이션, API 요청 형식 및 FCM 설정은 [backend/README.md](backend/README.md)를 참고합니다. Android 앱 구현은 별도 작업입니다. 계정 토큰, `.dev.vars`, `.env`는 커밋하지 않습니다.
 
 Wrangler의 공식 지원 운영체제는 macOS 13.5 이상과 Windows 11 등입니다. [Wrangler 설치 안내](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
 
@@ -229,7 +233,8 @@ Wrangler의 공식 지원 운영체제는 macOS 13.5 이상과 Windows 11 등입
 - [x] Python 3.12 공유 환경 구성 및 Mac M4 기본 실행 검증
 - [ ] 머리 데이터 수집, 라벨링, 데이터 분리
 - [ ] 모델 학습 및 평가
-- [ ] 혼잡도 계산과 웹 시각화 연결
+- [ ] Android 앱에 혼잡도·좌석 정보 표시
+- [ ] Android 앱 FCM 토큰 등록 및 자리 알림 구독 연결
 - [ ] 방문 시간 예측 및 대체 장소 추천 구현
 - [ ] 통합 테스트와 발표 준비
 
