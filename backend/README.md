@@ -1,202 +1,73 @@
-# Backend 담당 업무
+# Campus Pulse API
 
-**담당 초안: 김경렬**
+Cloudflare Worker API with Cloudflare D1 storage. The initial scope contains only the 5공학관 식당. One AI model sends its JSON analysis result by HTTP POST; the Worker validates and stores it. It does not calculate or translate the model's crowd level.
 
-식당의 AI 분석 결과를 받아 검증·저장하고, **Android 앱의 조회 API와 혼잡도 변화 알림**을 담당합니다. 이 문서는 역할과 인터페이스의 **협의안**이며, 현재 이 폴더에는 실행 가능한 서비스 코드가 없습니다. 앱은 김민정 담당 초안이며 기존 `frontend` 폴더를 사용합니다.
+`data_status` is `current`, `delayed`, `error`, or `unknown`, based on the analysis status and observation age.
 
-- [프로젝트 전체 안내](../README.md)
-- [AI 담당 업무](../ai/README.md)
-- [Frontend 담당 업무](../frontend/README.md)
+## Endpoints
 
-## 담당 범위
+### `GET /api/facilities`
 
-| 구분 | Backend 역할 |
-| --- | --- |
-| 분석 결과 수신 | AI 서버가 보내는 관측 결과의 인증·형식·값·시각 검증 |
-| 최신 상태 관리 | 시설별 최신 유효 관측을 관리하고 오래되거나 끊긴 상태 구분 |
-| 좌석 통계 | 300석의 상태 합계 검증 및 중복 관측 처리 방식 협의 |
-| 조회 API | Android 앱에 최신 상태와 갱신 시각 제공 |
-| 기록 저장 | 시간별 관측 기록의 저장 주기·보존 범위·조회 방식 설계 |
-| 변화 알림 | 유효한 혼잡도 변화 판정, 수신 설정 반영, 중복 알림 방지 |
-| 푸시 연동 | 앱 등록 토큰·갱신·수신 설정 관리 방식 협의 및 푸시 전송 연동 |
-| Cloudflare 연동 | Workers API와 저장소 연결 검토, 환경별 비밀값 관리 |
+Returns the facility list and each facility's latest observation.
 
-대상은 **5공학관 식당 300석**입니다. 영상 수신과 모델 추론은 AI 서버의 역할이며, AI 서버의 운영 위치와 영상 전송 프로토콜은 아직 미정입니다. 학습용 Mac과 운영 추론 서버를 같은 장비라고 가정하지 않습니다.
+### `GET /api/facilities/:facility_id`
 
-Cloudflare는 **백엔드 API 배포 예정 환경**입니다. Android 앱 자체의 배포 경로는 별도 미정입니다. **D1은 기록용 DB, R2는 파일용 객체 저장소의 추천 후보**이며 도입이 확정된 것은 아닙니다. 파일 저장과 혼잡도 기록 조회는 용도가 다릅니다.
+Returns one facility and its latest observation. Returns `404` when the ID is unknown.
 
-## 먼저 합의할 항목
+### `POST /api/observations`
 
-1. AI 팀과 시설·구역·좌석 식별자, 관측 시각, 전송 주기, 관측 범위를 맞춥니다.
-2. 좌석별 상세 관측을 보낼지, AI에서 중복 제거한 집계만 보낼지 결정합니다.
-3. 일시 비움 유예 시간과 상태 전환 조건을 AI·Frontend 팀과 함께 정합니다.
-4. 혼잡도 임계값과 오래된 데이터의 판정 시간을 합의합니다.
-5. 앱 담당자와 응답 형식 및 데이터 없음·수신 중단 시 표시 방법을 맞춥니다.
-6. 알림 방향·켜기/끄기, 지속 시간, 중복 방지와 복구 시 기준 상태를 합의합니다.
-7. 저장소와 푸시 제공자를 결정한 뒤 수신·조회·기록·알림 기능을 연결합니다.
-
-Backend 담당자가 유예 시간이나 혼잡도 임계값을 임의로 정하지 않습니다. 합의 전의 혼잡도는 `unknown`으로 처리하는 방안을 사용합니다.
-
-## AI 수신 계약 협의안
-
-아래는 구현을 위한 초안입니다. 필드와 엔드포인트는 팀 합의 후 확정합니다.
-
-| 필드 | 형식·의미 |
-| --- | --- |
-| `facility_id` | 식당 식별자: `engineering5_cafeteria` |
-| `observed_at` | 실제 관측 시각, UTC ISO 8601 문자열 |
-| `total_seats` | 시설의 전체 좌석 수: `300` |
-| `people_count` | 정의된 관찰 범위의 추정 인원. 산출할 수 없으면 `null` |
-| `seat_counts` | 아래 다섯 가지 상태별 좌석 수 |
-| `congestion_level` | `low` 원활, `medium` 보통, `high` 혼잡, `unknown` 확인 불가 |
-
-### 좌석 상태
-
-| 상태 | 의미 |
-| --- | --- |
-| `available` | 관측과 판정 기준상 이용 가능한 좌석 |
-| `person_occupied` | 사람이 점유한 좌석 |
-| `belongings_occupied` | 소지품으로 점유된 것으로 판정한 좌석 |
-| `temporarily_away` | 합의된 시간·상태 규칙상 일시 비움으로 유지하는 좌석 |
-| `unknown` | 미관측·가림·판정 불가 등으로 상태를 알 수 없는 좌석 |
-
-- 각 값은 0 이상의 정수이고, 다섯 상태는 **상호 배타적**이어야 합니다.
-- 다섯 값의 합은 항상 `300`입니다. 관측하지 못한 좌석은 `available`이 아닌 `unknown`에 포함합니다.
-- 같은 좌석에 사람과 가방이 있어도 두 좌석으로 세지 않습니다. 공통 초안에 따라 `person_occupied` 한 상태로 표현합니다.
-- `temporarily_away`는 다른 상태와 중복 합산하지 않습니다. 이전 관측만으로 유지할 수 있는 시간도 별도 합의합니다.
-- `people_count`는 좌석 점유 수와 다른 값입니다. 서 있는 사람이나 대기 인원이 포함될 수 있으므로 좌석 수와 동일하다고 가정하지 않습니다.
-- 일부 구역의 머리 탐지 수를 식당 전체 인원으로 표시하지 않습니다. 관측 범위 정보가 필요하면 계약을 확장합니다.
-
-### 수신 데이터 예시 — 실제 측정값이 아닌 Mock
+Accepts AI results. Requires `Authorization: Bearer <INGEST_TOKEN>`.
+While the Worker runs locally, the model can POST to `http://127.0.0.1:8787/api/observations`. Send the JSON object as the request body every agreed interval; the Worker does not watch a JSON file on disk. The reporting interval is still to be agreed with the AI owner.
 
 ```json
 {
-  "facility_id": "engineering5_cafeteria",
-  "observed_at": "2026-11-05T08:00:00Z",
+  "facility_id": "eng5_cafeteria",
+  "captured_at": "2026-11-05T12:10:00+09:00",
   "total_seats": 300,
-  "people_count": null,
-  "seat_counts": {
-    "available": 60,
-    "person_occupied": 170,
-    "belongings_occupied": 20,
-    "temporarily_away": 10,
-    "unknown": 40
-  },
-  "congestion_level": "unknown"
+  "available_seats": 140,
+  "belongings_seats": 25,
+  "occupied_seats": 115,
+  "unknown_seats": 20,
+  "seated_people": 115,
+  "queue_people": null,
+  "crowd_level": "MEDIUM",
+  "analysis_status": "OK"
 }
 ```
 
-이 예시의 좌석 합계는 300이며, 인원 수와 혼잡도는 확정하지 않은 상태입니다. 시연 데이터를 실제 관측 데이터로 저장·표시하지 않도록 구분 방식도 합의합니다.
+For `OK` and `DELAYED`, seat counts must be non-negative integers, the four seat categories must sum to 300, and `queue_people` may be an integer or `null`. For `ERROR`, numeric fields and `queue_people` must be `null`; `crowd_level` may be `null` or one of its allowed values. `crowd_level` accepts `LOW`, `MEDIUM`, `HIGH`; `analysis_status` accepts `OK`, `DELAYED`, `ERROR`. Invalid bodies return `400`, missing/invalid credentials return `401`, and unknown facility IDs return `404`.
 
-## API 협의안
+When the previous `OK` observation was `HIGH` and a new `OK` observation is `MEDIUM` or `LOW`, the Worker sends an FCM push to subscribed devices. Repeated reports of `MEDIUM`/`LOW` do not resend the same transition alert. The Android UI can label `LOW`/`MEDIUM`/`HIGH` as 여유/보통/포화.
 
-| 요청 | 용도 | 접근 |
-| --- | --- | --- |
-| `POST /api/observations` | AI 서버의 관측 결과 전송 | 인증된 AI 송신자 |
-| `GET /api/facilities/engineering5_cafeteria/status` | 최신 식당 상태 조회 | Android 앱의 조회 경로 |
-| 기록 조회 API — 미정 | 기간별 혼잡도 기록 조회 | 저장 방식 결정 후 설계 |
+### `POST /api/subscriptions`
 
-현재 위 엔드포인트는 구현되어 있지 않습니다. 관측 결과를 보내는 요청은 조회용 GET과 분리합니다.
+Register an Android Firebase Cloud Messaging device token for the cafeteria:
 
-앱 응답에는 공통 관측 필드와 함께 다음 정보를 제공하는 방안을 협의합니다.
-
-- **관측 시각:** `observed_at`. AI가 해당 상태를 관찰한 시각입니다.
-- **수신 시각:** Backend가 결과를 받은 시각입니다. 관측 시각을 덮어쓰지 않습니다.
-- **최신성 상태:** 정상·오래됨·관측 없음 등을 구분합니다. 필드 이름과 판정 시간은 미정입니다.
-- **데이터 의미:** 부분 관측인지, 실제 관측인지 시연 데이터인지 확인할 수 있어야 합니다.
-
-API 시각은 UTC로 통일하고, 앱의 한국 시간 표시는 Frontend가 담당하는 방안을 기본으로 협의합니다.
-
-## 중복과 수신 중단 처리
-
-- 좌석별 상세를 전송한다면 `facility_id + seat_id`를 기준으로 같은 물리 좌석을 식별합니다. 구역·카메라가 겹치는 경우의 식별자 매핑을 AI 팀과 맞춥니다.
-- AI가 집계값만 전송한다면 AI 단계에서 중복 제거가 완료됐는지 확인해야 합니다. Backend는 카메라별 집계를 단순 합산해 중복을 해결할 수 없습니다.
-- 동일 관측의 재전송과 순서가 뒤바뀐 요청을 구분할 기준을 정합니다. 더 오래된 결과가 최신 상태를 덮어쓰지 않도록 합니다.
-- `total_seats`는 Backend의 시설 설정과 대조합니다. 값의 범위와 좌석 합계가 맞지 않는 관측은 정상 상태로 반영하지 않습니다.
-- 새 데이터가 오지 않아도 **0명 또는 빈자리 300석으로 초기화하지 않습니다.** 마지막 관측과 시각을 보존하고, 오래되거나 끊긴 상태임을 표시합니다.
-- 최초 관측이 없을 때는 수치를 만들지 않습니다. 좌석 상태를 반환해야 한다면 전체 300석을 `unknown`으로 표현하는 방안을 협의합니다.
-
-## 인증과 저장
-
-AI 송신 인증값, Cloudflare 계정 토큰, 푸시 서버 발신 자격증명은 서버 환경변수 또는 비밀값 저장 기능으로 관리합니다. 앱 코드·배포 패키지·공개 저장소에 넣지 않습니다. 원본 영상 URL에 인증정보가 들어 있다면 조회 API에도 그대로 노출하지 않습니다.
-
-AI Hub 등 외부 학습 데이터는 개별 이용 조건을 확인합니다. 승인받지 않은 원본 데이터의 공개 R2 업로드나 GitHub 재배포를 전제로 하지 않습니다. 저장소 후보 선정과 데이터 공개 허용은 별도의 결정입니다.
-
-시간별 과거 기록을 조회하는 기능과 미래 혼잡도를 예측하는 기능도 구분합니다. 예측 모델·입력 기록·예측 범위가 정해지기 전에는 과거 통계를 예측 결과로 표시하지 않습니다.
-
-## 혼잡도 변화 푸시 알림
-
-김경렬 담당 Backend가 **새롭고 유효한 관측의 단계 변화**를 판정하고, 푸시 서비스를 통해 Android 앱에 알리는 구조입니다. 앱이 켜져 있을 때만 이전 값과 비교하는 방식으로 제한하지 않습니다. 앱 알림 권한 요청·수신·표시와 알림 탭 후 최신 조회는 Frontend 담당 범위입니다.
-
-```text
-AI 관측 → Backend 검증·최신 상태 관리 → 변화 확인·수신 설정 적용
-       → 푸시 서비스 → Android 알림 → 알림 탭 → 최신 현황 API 조회
+```json
+{ "facility_id": "eng5_cafeteria", "fcm_token": "<device-fcm-token>" }
 ```
 
-### 변화 판정 협의안
+### `DELETE /api/subscriptions`
 
-1. 관측 시각·유효성·최신성을 검증합니다. 처음 수신한 유효 단계는 비교 기준으로 저장하고 알림을 보내지 않습니다.
-2. 이전 확정 단계와 새 단계를 비교합니다. 단계가 같으면 새 알림을 만들지 않습니다.
-3. 경계에서 잠깐 흔들린 값을 걸러내기 위해 변화의 지속 여부를 확인합니다. 지속 시간·확정 기준은 미정입니다.
-4. 변화가 확정되면 수신 설정을 적용하고, 같은 변화에 대해 하나의 논리적 알림 이벤트를 생성합니다.
-5. `event_id` 등 식별자와 저장·재시도 방식을 정해 같은 변화의 재전송을 구분합니다.
+Unsubscribe the device using the same JSON body. The Android app should call this when the user turns off the alert or signs out.
 
-다음 방향 구분은 사용자 설정을 구현하기 위한 초안입니다. 설정의 최종 이름과 세부 기준은 앱 담당자와 합의합니다.
+## Local setup
 
-| 수신 설정 | 알림 대상 변화 |
-| --- | --- |
-| 원활해질 때 — 완화 방향 | `high → medium`, `medium → low`, `high → low` |
-| 혼잡해질 때 — 악화 방향 | `low → medium`, `medium → high`, `low → high` |
-| 양방향 | 위 두 방향의 유효한 단계 변화 |
-| 알림 끄기 | 변화 이벤트가 생겨도 해당 수신자에게 발송하지 않음 |
+1. Run `npm ci`, then copy `backend/.dev.vars.example` to `backend/.dev.vars`. Set a local `INGEST_TOKEN`; leave the FCM values empty to run the API without push delivery. `.dev.vars` is git-ignored.
+2. Run `npm run cf:types` after changing `wrangler.toml`. It generates `backend/worker-configuration.d.ts` with the D1 binding, secret bindings, and Cloudflare runtime types used by the editor and TypeScript checker.
+3. Create a D1 database with `npx wrangler d1 create campus-pulse --config backend/wrangler.toml` and put the returned ID in `database_id` in `wrangler.toml`.
+4. Create a Firebase project, register the Android app, and enable Firebase Cloud Messaging. Set the Android app's `google-services.json` in its app module, request notification permission on Android 13+, and create a notification channel in the app.
+5. For deployed push delivery, create a Firebase service account with permission to send FCM messages, then set the Worker secrets. Wrangler prompts for each value; never commit them:
 
-직접 `high → low` 또는 `low → high`로 바뀌면 관측하지 않은 중간 단계를 만들어 두 번 알리지 않습니다. 한 변화로 취급합니다. 설정을 켜거나 바꾼 것만으로 지난 변화 알림을 재발송하지 않는 방안을 기본으로 협의합니다.
+   ```sh
+   npx wrangler secret put INGEST_TOKEN --config backend/wrangler.toml
+   npx wrangler secret put FCM_PROJECT_ID --config backend/wrangler.toml
+   npx wrangler secret put FCM_CLIENT_EMAIL --config backend/wrangler.toml
+   npx wrangler secret put FCM_PRIVATE_KEY --config backend/wrangler.toml
+   ```
+6. Apply the local schema with `npm run api:db:local`.
+7. Start the Worker with `npm run api:dev`.
 
-- 최초 관측, `unknown`, 오래된 관측이나 수신 오류로 혼잡도 변화 알림을 만들지 않습니다.
-- 관측이 끊기거나 `unknown`이 된 뒤 복구되면 첫 유효 단계를 새 기준으로 잡고, 이후의 확정된 변화부터 비교하는 정책을 제안합니다.
-- 새 데이터가 없을 때 빈자리나 인원을 초기화해 거짓 변화 알림을 만들지 않습니다.
-- 같은 AI 관측의 중복 수신, 같은 이벤트의 중복 발송 요청, 기기에 중복 도착한 푸시는 서로 다른 문제입니다. Backend의 이벤트·재시도 관리와 앱의 수신 중복 처리 기준을 함께 정합니다.
+Apply the schema to the deployed D1 database with `npm run api:db:remote`. Required secrets are validated by Wrangler on deploy. Do not commit credentials.
 
-### 푸시 제공자와 추가 API 합의 항목
-
-[Firebase Cloud Messaging(FCM)](https://firebase.google.com/docs/cloud-messaging)은 **후보**입니다. FCM은 신뢰할 수 있는 서버 환경과 수신 앱을 연결하는 구성을 제공하지만, 현재 Firebase 프로젝트·SDK·서버 발신 설정은 추가하지 않았습니다. Cloudflare에서 사용할 서버 API 또는 SDK의 호환성도 확인해야 합니다.
-
-아래 항목은 API 이름·인증·요청 형식부터 합의할 대상이며, 아직 엔드포인트를 확정하지 않았습니다.
-
-- 앱 등록 토큰의 등록·갱신·삭제와 사용자 또는 앱 설치 단위의 연결 방식
-- 알림 켜기/끄기와 원활 방향·혼잡 방향·양방향 설정의 조회·변경
-- 유효하지 않거나 만료된 토큰 처리와 재설치 시 수신 대상 정리(계정을 도입한다면 로그아웃 처리 포함)
-- 토큰과 설정을 변경할 수 있는 주체의 인증 및 접근 범위
-
-서버의 수신 설정과 Android 운영체제의 알림 권한은 별도입니다. 서버 설정이 켜져 있어도 기기에서 알림을 표시할 수 있다고 단정하지 않습니다.
-
-### 알림 내용과 최신성
-
-알림에는 시설 식별자, 변경 전후 단계, 관측 시각, 알림 식별자를 담는 안을 제안합니다. 그 시점에 검증된 빈자리 수가 있을 때만 해당 수치를 포함합니다. 값이 없거나 불확실하면 임의의 숫자를 넣지 않습니다.
-
-푸시의 즉시 도착이나 모든 기기 수신을 보장하지 않습니다. 네트워크·기기 상태에 따른 지연, 만료 시간과 오래된 알림 처리 정책을 협의합니다. 알림을 탭하면 앱이 최신 상태 API를 다시 조회하며, 과거 푸시 내용을 현재 상태로 확정 표시하지 않습니다.
-
-## 현재 사용할 수 있는 명령
-
-Node.js 24.x에서 **저장소 최상위 폴더**를 기준으로 실행합니다.
-
-```bash
-npm ci
-npm run cf:version
-```
-
-현재는 백엔드용 Cloudflare 도구 설치·버전 확인만 가능합니다. Backend 서비스 구동 명령, API·푸시 구현, DB 초기화 명령, 배포 설정은 아직 없습니다. 이 명령은 Android 앱을 빌드하거나 실행하지 않습니다.
-
-## 완료 기준
-
-- [ ] AI·앱 담당자와 데이터 형식, 관측 범위, 시각 및 갱신 규칙 합의
-- [ ] 인증된 AI 송신자의 관측만 수신하고 잘못된 값·좌석 합계 거부
-- [ ] 중복 전송·카메라 중첩·늦게 도착한 관측의 처리 기준 검증
-- [ ] 최신 상태 API에서 300석의 상호 배타적 상태와 미관측 구역을 정확히 표현
-- [ ] 수신 중단·최초 관측 없음·부분 관측 상태를 Android 앱과 함께 확인
-- [ ] 기록 저장 및 조회 기능은 선택한 저장소에 맞춰 검증
-- [ ] 방향별 알림·켜기/끄기, 직접 두 단계 변화, 같은 변화 중복 방지 확인
-- [ ] 최초·확인 불가·오래된 관측·관측 복구에서 거짓 변화 알림이 생기지 않는지 확인
-- [ ] 토큰 갱신·권한 거부·지연·중복 수신과 알림 탭 후 최신 조회를 앱과 통합 확인
-- [ ] 비밀값이 응답·앱 코드·공개 저장소에 포함되지 않는지 확인
-- [ ] 실제 구현 후 구동·설정·배포 방법을 이 문서에 추가
+The first AI model's schema is implemented. The second model's schema has not been provided, so no assumptions have been added for it.

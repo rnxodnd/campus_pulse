@@ -8,7 +8,12 @@
   },
   "scripts": {
     "cf:version": "wrangler --version",
-    "cf:login": "wrangler login"
+    "cf:login": "wrangler login",
+    "cf:types": "wrangler types backend/worker-configuration.d.ts --config backend/wrangler.toml",
+    "api:dev": "wrangler dev --config backend/wrangler.toml",
+    "api:deploy": "wrangler deploy --config backend/wrangler.toml",
+    "api:db:local": "wrangler d1 migrations apply campus-pulse --local --config backend/wrangler.toml",
+    "api:db:remote": "wrangler d1 migrations apply campus-pulse --remote --config backend/wrangler.toml"
   },
   "devDependencies": {
     "wrangler": "4.157.0"
