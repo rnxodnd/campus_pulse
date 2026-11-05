@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { scaleAt } from '../data/spots'
+import { scaleAt } from '../lib/spots'
 
 const SPEED = 7 // 1초에 화면 폭의 몇 % 움직일지
 const FRAME_MS = 180 // 걷는 그림 2장 바꾸는 간격

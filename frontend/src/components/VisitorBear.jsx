@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { scaleAt } from '../data/spots'
-import { ANGRY_FRAMES } from '../data/bears'
+import { scaleAt } from '../lib/spots'
+import { ANGRY_FRAMES } from '../lib/bears'
 
 const ENTER_SPEED = 7
 const LEAVE_SPEED = 13 // 화나서 나갈 땐 더 빠르게

@@ -1,6 +1,6 @@
 import PageHeader from '../components/PageHeader'
 import BarsIcon from '../components/BarsIcon'
-import { describeAlert } from '../data/alerts'
+import { describeAlert } from '../lib/alerts'
 
 function formatWhen(iso) {
   const d = new Date(iso)
