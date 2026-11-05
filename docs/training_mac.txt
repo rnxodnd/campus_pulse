@@ -1,9 +1,105 @@
 Campus Pulse — Mac M4 머리 탐지 모델 학습 안내
-작성 기준: 2026-11-05 / Ultralytics 8.3.253
+작성 기준: 2026-11-06 / Ultralytics 8.3.253
 
-이 문서는 학습을 직접 실행할 때 사용할 안내입니다. 문서 작성 과정에서는
-모델을 다운로드하거나 학습하지 않았습니다. 실제 데이터에서의 학습 시간,
-처리 속도, 정확도는 아래 점검과 평가를 실행한 뒤 판단합니다.
+이 문서는 학습을 직접 실행할 때 사용할 안내입니다. 시험 학습 이후
+2026-11-06에 타일·배경 보완 학습도 완료했습니다. 이후 절의 일반 명령 예시와
+실제로 실행한 설정을 구분합니다. 별도 혼잡 현장 테스트는 미완료입니다.
+
+현재 선택 모델과 완료한 추가 학습
+
+선택 가중치: runs/head/indoor_hardneg_20261106_01/weights/best.pt
+현재 추론 설정: MPS, imgsz=1280, tile-size=2048, tile-overlap=0.2,
+               conf=0.10, iou=0.7
+상세 결과: docs/head_improvement_20261106.md 및 docs/head_extension_20261106.md
+
+후속 10 epoch 및 식당 비중 조정 8 epoch 학습도 완료했습니다.
+각 epoch를 저장해 비교했으며, 기존 2차 best 가중치는 유지합니다.
+추론 설정 조정 후 식당 val 4장에서는 정탐11/오탐1/누락4,
+Recall=73.3%, F1=0.815, 인원 MAE=0.75명입니다.
+목표 Recall>=90%, F1>=0.87은 달성하지 못했습니다.
+학습·설정 선택에 쓰지 않은 사용자 사진(480x270)에서는 5개를 탐지했고
+육안상 약13개가 보여 일반화에 한계가 있습니다. 정식 라벨은 없어
+이 사진의 Recall/F1을 계산하지 않았습니다.
+
+1차: 기존 실내 가중치 → 타일 포함 train 163장·2045박스, 5 epoch,
+     lr0=0.001, 학습·검증 약 328.9초.
+2차: 1차 best → 머리 없는 train 배경 17장 추가, train 180장·2045박스,
+     5 epoch, lr0=0.0003, 학습·검증 약 339.6초.
+두 실행 모두 val 81장·1882박스를 유지했고, val 사진으로 타일을 만들지 않았습니다.
+
+별도 식당 val 4장·정답 15개에서 같은 타일 추론 조건으로 비교했습니다.
+기존: 정탐 3 / 오탐 1 / 누락 12, F1=0.316.
+2차 best + 초기 타일1280/conf0.25: 정탐 11 / 오탐 2 / 누락 4,
+F1=0.786, 인원 MAE=1.0명. 이후 설정 비교는 위 현재 설정을 참조합니다.
+정답 매칭 IoU=0.5. 이 4장은 모델 선택에 쓴 val이며 독립 test가 아닙니다.
+전체 프레임 축소 추론에서는 2개만 찾았으므로 타일 옵션도 함께 사용합니다.
+영상 실행과 5초 샘플링: docs/head_video_input.md
+
+2차 학습을 새 폴더에서 재현하는 예시:
+source .venv/bin/activate
+python ai/train_head_smoke.py \
+  --data data/head_aihub71368_hardneg_v1/data.yaml \
+  --model runs/head/indoor_tiles_20261106_01/weights/best.pt \
+  --epochs 5 --lr0 0.0003 --device mps --name indoor_hardneg_retry_01
+
+이미 같은 폴더가 있으면 새 --name으로 바꿉니다. 추가 epoch만으로 현장 성능
+향상을 보장할 수 없으므로 새 영상의 오류를 확인한 뒤 재학습을 결정합니다.
+
+첫 시험 학습 — 실행 완료 및 다시 실행하는 방법
+
+저장소 최상위에서:
+source .venv/bin/activate
+python ai/train_head_smoke.py
+
+기본 입력: data/head_cafeteria_v1/data.yaml
+초기 가중치: weights/yolov8n.pt
+기본 실행: MPS / 3 epoch / imgsz=1280 / batch=2 / workers=0 / amp=False
+옵티마이저: AdamW, lr0=0.001, nbs=2, warmup_epochs=0
+증강 조정: mosaic=0, scale=0.1, translate=0.05
+
+3 epoch 실행 점검에 맞춘 설정이며 본 학습 최적값은 아닙니다.
+MPS가 없으면 오류로 중단합니다. 일반 터미널에서 먼저 환경 점검을 합니다.
+Codex의 격리 환경에서는 MPS가 보이지 않아 실제 Mac GPU 접근이 필요한
+경우가 있습니다. 별도 NVIDIA CUDA 설치는 이 Mac의 MPS 학습에 필요하지 않습니다.
+
+초기 가중치가 없는 새 컴퓨터에서만 공식 파일을 준비합니다.
+기존 weights/yolov8n.pt가 있다면 아래 다운로드를 반복하지 않습니다.
+mkdir -p weights
+curl --fail --location --output weights/yolov8n.pt \
+  https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
+
+이것은 초기 가중치 약 6.5MB이며 COCO 이미지 데이터셋 다운로드가 아닙니다.
+실행 스크립트는 로컬 가중치가 없으면 중단하고 모델을 자동 다운로드하지 않습니다.
+사진과 라벨은 로컬에 유지하며 원격 학습 기록·업로드 연동은 비활성화합니다.
+
+첫 실행 폴더: runs/head/smoke_20261105_01/
+측정 결과: 초기화와 학습·최종 검증을 포함해 약 121.9초, 로그상 GPU 메모리
+약 2.2~2.3GB. best.pt와 last.pt 저장, 3개 epoch의 기록값 유한성 확인.
+검증 결과: Precision / Recall / mAP50 / mAP50-95 모두 0.
+천장과 바닥을 머리로 잘못 탐지했으며, 이 체크포인트는 실사용에 부적합합니다.
+자세한 설정·사진별 결과·제약은 docs/head_smoke_result.md에 기록했습니다.
+
+기본 명령은 새 UTC 시각의 실행 폴더를 만듭니다. 이름을 지정할 때는:
+python ai/train_head_smoke.py --name smoke_retry_01
+기존 폴더명은 덮어쓰지 않습니다. 결과 폴더의 summary.json, args.yaml,
+results.csv, predictions/와 weights/를 함께 확인합니다.
+
+실내 AI-Hub 샘플을 추가한 학습
+
+data/head_aihub71368_v1/data.yaml 준비 완료:
+train 83장·머리 1,882개 / val 81장·머리 1,882개.
+카페는 train, 공연장은 val이며 기존 식당 train 16장 / val 4장을 유지합니다.
+야외 자료는 제외했습니다. 상세 검사와 재현 명령: docs/aihub71368_sample.md
+
+python ai/train_head_smoke.py \
+  --data data/head_aihub71368_v1/data.yaml \
+  --epochs 3 --device mps --name indoor_20261105_01
+
+이미 같은 실행 폴더가 있으면 새 --name을 사용합니다.
+외부 공연장 검증 성능과 식당 4장 성능을 구분해서 확인해야 합니다.
+3 epoch 결과를 확인한 뒤 추가 학습 횟수를 정합니다.
+
+이하: 데이터가 확장됐을 때 참고할 일반 학습 안내
 
 환경: Mac M4 / 메모리 16GB / Python 3.12 / PyTorch 2.9.1
       torchvision 0.24.1 / Ultralytics 8.3.253 / MPS
