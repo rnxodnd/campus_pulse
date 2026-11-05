@@ -1,0 +1,302 @@
+Campus Pulse — Mac M4 머리 탐지 모델 학습 안내
+작성 기준: 2026-11-05 / Ultralytics 8.3.253
+
+이 문서는 학습을 직접 실행할 때 사용할 안내입니다. 문서 작성 과정에서는
+모델을 다운로드하거나 학습하지 않았습니다. 실제 데이터에서의 학습 시간,
+처리 속도, 정확도는 아래 점검과 평가를 실행한 뒤 판단합니다.
+
+환경: Mac M4 / 메모리 16GB / Python 3.12 / PyTorch 2.9.1
+      torchvision 0.24.1 / Ultralytics 8.3.253 / MPS
+기본 경로: YOLOv8n 사전학습 가중치 + 팀의 head 데이터로 파인튜닝
+별도 선택: 사전학습 가중치 없이 YOLOv8n 구조를 처음부터 학습
+
+1. 실행 위치와 가상환경
+
+README의 pip 또는 uv 설치 방법으로 .venv 구성을 먼저 마칩니다.
+아래 명령은 모두 저장소 최상위 폴더에서 같은 터미널로 실행합니다.
+다른 위치에 저장소를 받았다면 첫 번째 cd 경로만 실제 경로로 바꿉니다.
+
+cd "/실제/저장소/경로/campus_pulse"
+source .venv/bin/activate
+python scripts/check_environment.py --device mps
+
+환경 점검이 PASS인지 확인한 뒤 진행합니다. CPU로 자동 대체된 결과와
+MPS 성공을 혼동하지 않도록 여기서는 --device mps를 명시했습니다.
+
+이후 명령에서 사용할 경로를 지정합니다.
+
+HEAD_PROJECT_ROOT="$PWD"
+HEAD_DATA_YAML="$HEAD_PROJECT_ROOT/data/head/dataset.yaml"
+HEAD_RESULTS_DIR="$HEAD_PROJECT_ROOT/runs/head"
+
+터미널을 새로 열면 가상환경 활성화와 위 경로 지정을 다시 실행합니다.
+명령의 줄 끝에 있는 역슬래시(\) 뒤에는 공백을 붙이지 않습니다.
+
+2. 학습 데이터 준비
+
+학습할 대상은 head 한 종류이며 클래스 번호는 0입니다.
+얼굴이 아니라 머리 영역에 박스를 그립니다. 뒷머리도 대상에 포함합니다.
+가려진 머리, 화면 가장자리, 너무 작아 식별하기 어려운 대상의 표기 기준을
+팀에서 먼저 통일하고, 여러 명이 라벨링했다면 서로 일부를 확인합니다.
+
+실제로 적용할 카메라 구도와 비슷한 영상을 확보합니다. 여유·보통·포화,
+가림, 작은 머리, 밝기 차이, 사람이 없는 장면도 포함합니다. 사람이 없는
+장면은 배경을 머리로 잘못 탐지하는지 확인하는 데 사용합니다.
+
+영상 또는 충분히 떨어진 촬영 시간 구간을 먼저 train / val / test로
+나눈 다음 프레임을 추출합니다. 거의 같은 연속 프레임을 무작위로 섞어
+각 묶음에 나누면 평가가 실제보다 좋게 나올 수 있습니다.
+
+- train: 가중치를 학습하는 자료
+- val: 설정과 모델을 선택하는 자료
+- test: 모델과 설정을 정한 뒤 최종 성능을 확인할 별도 자료
+
+예시 비율은 70% / 15% / 15%이지만 장면의 독립성을 우선합니다.
+각 묶음에 실제 머리가 있는 장면도 포함해야 탐지 성능을 평가할 수 있습니다.
+test 결과를 반복해서 보며 설정을 고르지 않습니다.
+
+3. 폴더와 라벨 형식
+
+저장소 안에서 아래 구조를 사용합니다.
+
+data/head/
+  dataset.yaml
+  images/
+    train/  scene01_0001.jpg ...
+    val/    scene02_0001.jpg ...
+    test/   scene03_0001.jpg ...
+  labels/
+    train/  scene01_0001.txt ...
+    val/    scene02_0001.txt ...
+    test/   scene03_0001.txt ...
+
+이미지와 라벨 파일의 이름은 확장자를 제외하고 같아야 합니다.
+서로 다른 영상에서 추출한 파일이 겹치지 않도록 영상 이름을 붙입니다.
+라벨링 도구에서 YOLO object detection 형식으로 내보냅니다.
+
+라벨 한 줄은 머리 한 개이며 형식은 다음과 같습니다.
+
+0 x_center y_center width height
+
+좌표는 픽셀값이 아니라 이미지 너비·높이로 나눈 0~1 범위입니다.
+가로 중심과 박스 너비는 이미지 너비로, 세로 중심과 박스 높이는 이미지
+높이로 나눕니다. 예를 들어 정규화된 박스 한 개는 다음처럼 적습니다.
+
+0 0.500000 0.400000 0.100000 0.150000
+
+위 예시는 형식 설명용이므로 실제 이미지의 정답으로 복사하지 않습니다.
+머리가 없는 이미지에는 대응하는 빈 .txt 파일을 두는 방식으로 통일합니다.
+사람이 있는데 라벨을 빠뜨린 이미지를 음성 사례로 사용하지 않습니다.
+
+4. 데이터 YAML 생성
+
+아래 코드는 폴더를 만들고 dataset.yaml의 path를 현재 컴퓨터의 절대
+경로로 기록합니다. 따라서 실행 위치에 따라 데이터 경로가 달라지는
+혼동을 줄일 수 있습니다. 데이터 이미지와 라벨을 생성하는 코드는 아닙니다.
+
+python - <<'PY'
+from pathlib import Path
+import yaml
+
+project_root = Path.cwd()
+if not (project_root / "pyproject.toml").is_file():
+    raise SystemExit("저장소 최상위 폴더에서 실행하세요.")
+dataset_root = (project_root / "data" / "head").resolve()
+for kind in ("images", "labels"):
+    for split in ("train", "val", "test"):
+        (dataset_root / kind / split).mkdir(parents=True, exist_ok=True)
+config = {
+    "path": str(dataset_root),
+    "train": "images/train",
+    "val": "images/val",
+    "test": "images/test",
+    "names": {0: "head"},
+}
+yaml_path = dataset_root / "dataset.yaml"
+with yaml_path.open("x", encoding="utf-8") as output:
+    yaml.safe_dump(config, output, allow_unicode=True, sort_keys=False)
+print(yaml_path)
+PY
+
+이미 dataset.yaml이 있으면 덮어쓰지 않고 FileExistsError로 멈춥니다.
+그 경우 기존 파일의 path가 현재 data/head의 절대 경로인지 확인합니다.
+저장소 위치를 옮겼거나 다른 팀원의 컴퓨터로 옮겼다면 path도 수정합니다.
+names에는 0: head만 있어야 합니다. COCO의 클래스 목록을 넣지 않습니다.
+
+학습 전에는 images/train, images/val과 대응 라벨을 실제로 채우고,
+라벨링 도구에서 박스가 머리와 일치하는지 직접 확인합니다.
+
+5. 3 epoch 실행 점검
+
+먼저 작은 모델과 batch=2로 경로, 라벨, MPS 실행, 체크포인트 저장이
+되는지 확인합니다. 이 3 epoch 결과는 최종 정확도를 판단하는 자료가 아닙니다.
+
+HEAD_SMOKE_NAME="smoke_$(date +%Y%m%d_%H%M%S)"
+yolo detect train \
+  model=yolov8n.pt data="$HEAD_DATA_YAML" \
+  device=mps imgsz=640 batch=2 epochs=3 workers=0 \
+  cache=False amp=False plots=True \
+  project="$HEAD_RESULTS_DIR" name="$HEAD_SMOKE_NAME"
+
+처음 실행할 때 yolov8n.pt가 없다면 공식 사전학습 가중치를 다운로드합니다.
+COCO 전체 데이터셋을 다운로드하는 명령은 아닙니다. 이 초기 가중치는
+머리 전용 모델이 아니며, 위 head 라벨을 이용해 목표 작업에 맞춥니다.
+
+확인할 항목:
+- 데이터 파일이 정상적으로 읽히고 클래스가 head 하나인지
+- 학습 로그의 장치가 MPS인지
+- train_batch*.jpg에 표시된 정답 박스가 머리와 일치하는지
+- 결과 폴더에 results.csv와 weights/best.pt, weights/last.pt가 생기는지
+- 메모리 부족이나 NaN 오류 없이 학습과 검증이 끝나는지
+
+첫 실행의 다운로드·초기화 비용과 실제 epoch 시간을 구분합니다.
+3 epoch 시간만으로 장시간 실행 성능을 단정하지 않습니다.
+
+6. 본 학습
+
+아래 30 epoch는 시작 설정 예시입니다. 앞의 실행 시간, 데이터 크기,
+남은 평가·통합 시간을 보고 epochs 값을 정합니다. 30 epoch 안에
+목표 정확도에 도달한다거나 해커톤 시간 안에 끝난다는 보장은 없습니다.
+
+HEAD_TRAIN_NAME="finetune_$(date +%Y%m%d_%H%M%S)"
+HEAD_RUN_DIR="$HEAD_RESULTS_DIR/$HEAD_TRAIN_NAME"
+printf '%s\n' "$HEAD_RUN_DIR"
+yolo detect train \
+  model=yolov8n.pt data="$HEAD_DATA_YAML" \
+  device=mps imgsz=640 batch=2 epochs=30 patience=10 workers=0 \
+  cache=False amp=False plots=True seed=0 \
+  project="$HEAD_RESULTS_DIR" name="$HEAD_TRAIN_NAME"
+
+이 명령은 점검 학습을 이어받지 않고 공식 초기 가중치에서 본 학습을
+시작합니다. 출력되는 실제 결과 경로를 기록해 둡니다. 같은 이름의 폴더가
+이미 있으면 자동으로 이름이 달라질 수 있으므로 로그의 저장 위치가 기준입니다.
+
+M4의 메모리를 확인하면서 batch=4를 별도 실행에서 비교할 수 있습니다.
+imgsz=640은 시작값입니다. 작은 머리가 자주 누락되면 라벨·구도·입력
+해상도를 함께 검토하고, 해상도를 높였을 때 속도와 메모리를 다시 측정합니다.
+여러 설정을 동시에 바꾸지 말고 val 결과로 비교합니다.
+
+7. 저장 파일과 중단한 학습 재개
+
+결과 폴더에서 다음 파일을 확인합니다.
+
+- weights/best.pt: 검증 기준으로 선택된 가중치, 최종 평가·추론 후보
+- weights/last.pt: 마지막으로 저장된 epoch의 체크포인트
+- results.csv, results.png: 학습·검증 변화 기록
+- args.yaml: 해당 실행에서 사용한 설정
+
+터미널이 바뀌었다면 1절의 환경·경로 설정을 다시 수행하고,
+HEAD_RUN_DIR을 로그에 기록한 실제 실행 폴더의 절대 경로로 지정합니다.
+그다음 아래 명령으로 뒤의 평가·추론에 사용할 실행 이름도 복구합니다.
+
+HEAD_TRAIN_NAME="$(basename "$HEAD_RUN_DIR")"
+
+중단된 실행의 last.pt가 남아 있다면 다음 명령으로 재개합니다.
+
+yolo detect train model="$HEAD_RUN_DIR/weights/last.pt" resume=True device=mps
+
+체크포인트가 저장되기 전에 중단되면 해당 지점에서 재개할 수 없습니다.
+resume=True는 저장된 학습 상태와 진행 epoch를 복원합니다. 이미 완료한
+3 epoch 점검이나 정상 종료된 학습의 epoch를 늘리는 명령으로 사용하지 않습니다.
+완료한 모델을 추가로 학습하려면 best.pt를 model로 지정하고 resume를
+사용하지 않는 새 실행을 만들어야 하며, 이 경우 학습 상태가 새로 시작됩니다.
+
+8. 검증과 최종 테스트
+
+설정 비교에는 val을 사용합니다.
+
+yolo detect val \
+  model="$HEAD_RUN_DIR/weights/best.pt" data="$HEAD_DATA_YAML" split=val \
+  device=mps imgsz=640 batch=2 workers=0 \
+  project="$HEAD_RESULTS_DIR" name="val_$HEAD_TRAIN_NAME"
+
+모델과 설정을 선택한 뒤 분리해 둔 test 자료로 평가합니다.
+images/test와 labels/test가 준비된 경우에만 실행합니다.
+
+yolo detect val \
+  model="$HEAD_RUN_DIR/weights/best.pt" data="$HEAD_DATA_YAML" split=test \
+  device=mps imgsz=640 batch=2 workers=0 \
+  project="$HEAD_RESULTS_DIR" name="test_$HEAD_TRAIN_NAME"
+
+Precision, Recall, mAP뿐 아니라 서비스에서 쓸 기준도 별도로 측정합니다.
+- 같은 관찰 구역에서 사람이 센 인원과 모델 추정 인원의 차이
+- 여유·보통·포화 단계가 실제 기준과 얼마나 일치하는지
+- 빈 장면의 오탐, 작은 머리·가려진 머리의 누락
+- 영상 처리부터 웹 표시까지의 지연
+
+yolo val은 위 서비스 지표를 자동 계산하지 않습니다. 머리 수가 곧 빈자리
+수는 아니며, 가방으로 맡아 둔 좌석도 이 모델만으로는 판별하지 못합니다.
+
+9. 실제 영상으로 추론 확인
+
+다음 source를 본인의 평가용 영상 경로로 바꿉니다. 영상은 학습에 사용한
+프레임만 재생하기보다, 따로 남겨 둔 장면을 사용하는 것이 좋습니다.
+
+yolo detect predict \
+  model="$HEAD_RUN_DIR/weights/best.pt" source="/절대/경로/평가영상.mp4" \
+  device=mps imgsz=640 conf=0.25 save=True \
+  project="$HEAD_RESULTS_DIR" name="predict_$HEAD_TRAIN_NAME"
+
+conf=0.25는 시작값이며 val 자료에서 오탐과 누락을 확인해 조정합니다.
+최종 test를 보며 계속 문턱값을 바꾸지 않습니다. 저장된 탐지 영상을
+직접 확인하고, 콘솔의 모델 처리 시간과 웹 서비스 전체 지연을 구분합니다.
+
+10. 오류가 났을 때
+
+- 메모리 부족: 다른 무거운 앱을 정리하고 batch=2를 1로 줄입니다.
+  cache=False, workers=0을 유지합니다. 그래도 부족하면 imgsz를 낮추되
+  작은 머리 탐지 성능이 떨어지는지 반드시 다시 평가합니다.
+- MPS 사용 불가: 1절의 점검 결과와 arm64 Python 사용 여부를 확인합니다.
+  원인 분리를 위해 device=cpu로 짧게 점검할 수 있지만 속도는 다시 측정합니다.
+- 데이터 없음: dataset.yaml의 절대 path, images/labels 폴더, 파일명 대응을
+  확인합니다. 머리가 있는데 비어 있는 라벨, 좌표 범위 오류도 확인합니다.
+- 학습은 되지만 탐지가 나쁨: epoch를 늘리기 전에 라벨 누락·박스 기준,
+  작은 머리의 크기, 카메라 구도 차이, 빈 장면의 오탐을 확인합니다.
+- 손실이 NaN이거나 MPS 연산 오류: 오류 로그와 사용 설정을 남기고,
+  기본 점검을 다시 실행합니다. 여러 패키지를 한꺼번에 업그레이드하지 않습니다.
+
+11. 선택 사항 — 사전학습 없이 시작
+
+사전학습 가중치 사용을 금지하는 대회 규정이 있거나, 팀이 처음부터
+학습하는 실험을 명시적으로 선택한 경우에만 고려합니다. 자체 데이터가
+적고 시간이 제한된 조건에서는 파인튜닝보다 결과의 불확실성이 큽니다.
+새 신경망 구조를 설계하는 방식은 아니며 YOLOv8n 구조를 그대로 사용합니다.
+
+HEAD_SCRATCH_NAME="scratch_$(date +%Y%m%d_%H%M%S)"
+yolo detect train \
+  model=yolov8n.yaml pretrained=False data="$HEAD_DATA_YAML" \
+  device=mps imgsz=640 batch=2 epochs=3 workers=0 \
+  cache=False amp=False plots=True \
+  project="$HEAD_RESULTS_DIR" name="$HEAD_SCRATCH_NAME"
+
+위 명령도 실행 점검용 3 epoch입니다. 충분한 성능이 나오는 학습 횟수와
+데이터 양은 별도로 확인해야 합니다. 파인튜닝 명령과 연속해서 자동 실행하지 않습니다.
+
+12. 비용·저장·서비스 연결 범위
+
+이 안내의 명령은 Mac에서 로컬로 실행합니다. Ultralytics 계정 로그인,
+API 키, 클라우드 학습 크레딧이 필요하지 않으며 이 명령 자체가 클라우드
+GPU 과금을 시작하지 않습니다. 초기 패키지·가중치 다운로드에는 인터넷이
+필요할 수 있습니다. 추후 외부 라벨링·호스팅 서비스를 쓰면 그 비용은 별도입니다.
+
+data/, runs/, *.pt 등은 현재 .gitignore에서 제외됩니다. 코드 저장소와
+별도로 데이터, 라벨, 선택한 best.pt, 평가 결과를 보관해야 합니다.
+dataset.yaml에는 Mac의 절대 경로가 들어가므로 다른 컴퓨터로 옮길 때 수정합니다.
+
+Cloudflare는 웹/API 배포와 분석 결과 전달에 사용할 예정입니다.
+이 계획의 모델 학습·영상 추론은 Mac이 담당하며, Cloudflare가 Mac의
+학습 작업을 대신 실행하는 구성은 아닙니다. 웹 연결은 별도 구현 단계입니다.
+
+참고 자료
+
+- 학습·MPS·재개: https://docs.ultralytics.com/modes/train/
+- YOLO 라벨 형식: https://docs.ultralytics.com/datasets/detect/
+- 검증: https://docs.ultralytics.com/modes/val/
+- 추론: https://docs.ultralytics.com/modes/predict/
+- 현재 고정 버전의 인자 정의:
+  https://github.com/ultralytics/ultralytics/blob/v8.3.253/ultralytics/cfg/default.yaml
+- 현재 고정 버전의 체크포인트·재개 구현:
+  https://github.com/ultralytics/ultralytics/blob/v8.3.253/ultralytics/engine/trainer.py
+
+공식 최신 문서의 모델 예시는 시간이 지나면서 바뀔 수 있습니다.
+이 안내는 저장소에 고정한 8.3.253의 인자 정의와 재개 동작을 함께 확인했습니다.

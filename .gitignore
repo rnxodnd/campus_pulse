@@ -1,0 +1,45 @@
+# Local Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.wrangler/
+
+# Training inputs, outputs, and model artifacts
+data/
+datasets/
+runs/
+weights/
+checkpoints/
+*.pt
+*.pth
+*.onnx
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.log
+
+# Potential frontend dependencies
+node_modules/
