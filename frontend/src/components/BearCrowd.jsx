@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Bear from './Bear'
 import VisitorBear from './VisitorBear'
-import { randomVisitorSprite, spriteFor } from '../data/bears'
-import { spreadPoint } from '../data/spots'
+import { randomVisitorSprite, spriteFor } from '../lib/bears'
+import { spreadPoint } from '../lib/spots'
 
 let nextId = 0
 

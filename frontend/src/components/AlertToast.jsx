@@ -1,4 +1,4 @@
-import { describeAlert } from '../data/alerts'
+import { describeAlert } from '../lib/alerts'
 
 // 앱 안에서 위에서 내려오는 알림 (설계도 ⑧⑨ 모양)
 export default function AlertToast({ alert, onClick, onClose }) {

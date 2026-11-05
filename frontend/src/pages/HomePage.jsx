@@ -1,8 +1,8 @@
 import TopBar from '../components/TopBar'
 import StatusBadge from '../components/StatusBadge'
 import BearCrowd from '../components/BearCrowd'
-import { getLevelView, NOT_READY } from '../data/levels'
-import { BEARS_BY_LEVEL } from '../data/bears'
+import { getLevelView, NOT_READY } from '../lib/levels'
+import { BEARS_BY_LEVEL } from '../lib/bears'
 
 const TYPE_EMOJI = { cafeteria: '🍽️', library: '📚', building: '🏢' }
 
