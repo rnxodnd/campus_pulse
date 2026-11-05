@@ -8,6 +8,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "files": ["worker-configuration.d.ts"],
+  "files": ["worker-configuration.d.ts", "src/env.d.ts"],
   "include": ["src/**/*.ts"]
 }

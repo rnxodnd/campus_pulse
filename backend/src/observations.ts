@@ -1,42 +1,78 @@
-import { notifySubscribers } from "./fcm";
 import { json, readJson } from "./http";
-import type { AnalysisStatus, CrowdLevel } from "./types";
-import { isStale, validateObservation } from "./validation";
+import type { ObservationInput } from "./types";
+import { validateObservation } from "./validation";
 
-export async function ingest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+const FACILITY_ID = "eng5_cafeteria";
+const FRAME_INSERT_BATCH_SIZE = 50;
+
+async function createAnalysisId(input: ObservationInput): Promise<string> {
+  const payload = new TextEncoder().encode(JSON.stringify(input));
+  const digest = await crypto.subtle.digest("SHA-256", payload);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function ingest(request: Request, env: Env): Promise<Response> {
   if (!env.INGEST_TOKEN || request.headers.get("authorization") !== `Bearer ${env.INGEST_TOKEN}`) {
     return json({ error: "unauthorized" }, 401);
   }
   const body = await readJson(request);
   if (body instanceof Response) return body;
   const input = validateObservation(body);
-  if (!input) return json({ error: "invalid_observation" }, 400);
+  if (!input) return json({ error: "invalid_head_video_document" }, 400);
+
   const facility = await env.DB.prepare("SELECT id FROM facilities WHERE id = ? AND is_active = 1")
-    .bind(input.facility_id).first<{ id: string }>();
+    .bind(FACILITY_ID).first<{ id: string }>();
   if (!facility) return json({ error: "facility_not_found" }, 404);
-  if (input.analysis_status === "OK" && isStale(input.captured_at)) {
-    return json({ error: "captured_at_out_of_range" }, 400);
+
+  const analysisId = await createAnalysisId(input);
+  const existing = await env.DB.prepare("SELECT ingest_status FROM analysis_runs WHERE analysis_id = ?")
+    .bind(analysisId).first<{ ingest_status: "processing" | "complete" }>();
+  if (existing?.ingest_status === "complete") {
+    return json({ accepted: true, duplicate: true, analysis_id: analysisId, frame_count: input.images.length });
   }
-  const previous = await env.DB.prepare(`
-    SELECT captured_at, crowd_level, analysis_status
-      FROM observations WHERE facility_id = ? ORDER BY captured_at DESC LIMIT 1
-  `).bind(input.facility_id).first<{ captured_at: string; crowd_level: CrowdLevel; analysis_status: AnalysisStatus }>();
-  if (previous && Date.parse(input.captured_at) <= Date.parse(previous.captured_at)) {
-    return json({ error: "observation_not_newer_than_latest" }, 409);
-  }
-  const status = input.analysis_status;
+
   await env.DB.prepare(`
-    INSERT INTO observations (
-      facility_id, captured_at, total_seats, available_seats, belongings_seats,
-      occupied_seats, unknown_seats, seated_people, queue_people, crowd_level, analysis_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(input.facility_id, input.captured_at, input.total_seats, input.available_seats,
-    input.belongings_seats, input.occupied_seats, input.unknown_seats, input.seated_people,
-    input.queue_people,
-    input.crowd_level, status).run();
-  if (status === "OK" && previous?.analysis_status === "OK" && previous.crowd_level === "HIGH" &&
-      (input.crowd_level === "MEDIUM" || input.crowd_level === "LOW")) {
-    ctx.waitUntil(notifySubscribers(env, input.facility_id, input.crowd_level));
+    INSERT OR IGNORE INTO analysis_runs (
+      analysis_id, facility_id, schema_version, input_type, video_name,
+      sample_interval_seconds, timestamp_source, reported_fps, reported_frame_count,
+      decoded_frame_count, analyzed_frame_count, last_decoded_video_time_seconds,
+      decode_check, analyzed_at, ingest_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing')
+  `).bind(
+    analysisId, FACILITY_ID, input.schema_version, input.input_type, input.video_name,
+    input.sample_interval_seconds, input.timestamp_source, input.reported_fps, input.reported_frame_count,
+    input.decoded_frame_count, input.analyzed_frame_count, input.last_decoded_video_time_seconds,
+    input.decode_check, input.analyzed_at,
+  ).run();
+
+  for (let offset = 0; offset < input.images.length; offset += FRAME_INSERT_BATCH_SIZE) {
+    const statements = input.images.slice(offset, offset + FRAME_INSERT_BATCH_SIZE).map((frame) =>
+      env.DB.prepare(`
+        INSERT OR IGNORE INTO head_observations (
+          analysis_id, frame_index, video_time_seconds, image_name,
+          image_width, image_height, head_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        analysisId, frame.frame_index, frame.video_time_seconds, frame.image_name,
+        frame.image_width, frame.image_height, frame.head_count,
+      ),
+    );
+    await env.DB.batch(statements);
   }
-  return json({ accepted: true, crowd_level: input.crowd_level, analysis_status: status }, 201);
+
+  const savedFrames = await env.DB.prepare(
+    "SELECT COUNT(*) AS frame_count FROM head_observations WHERE analysis_id = ?",
+  ).bind(analysisId).first<{ frame_count: number }>();
+  if (savedFrames?.frame_count !== input.images.length) {
+    return json({ error: "incomplete_analysis_storage", analysis_id: analysisId }, 500);
+  }
+  await env.DB.prepare("UPDATE analysis_runs SET ingest_status = 'complete' WHERE analysis_id = ?")
+    .bind(analysisId).run();
+
+  return json({
+    accepted: true,
+    analysis_id: analysisId,
+    facility_id: FACILITY_ID,
+    frame_count: input.images.length,
+  }, 201);
 }

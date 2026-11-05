@@ -1,18 +1,33 @@
 export type CrowdLevel = "LOW" | "MEDIUM" | "HIGH";
-export type AnalysisStatus = "OK" | "DELAYED" | "ERROR";
 
+export interface FrameObservation {
+  frame_index: number;
+  video_time_seconds: number;
+  image_name: string;
+  image_width: number;
+  image_height: number;
+  head_count: number;
+  detections: unknown[];
+}
+
+/** Full head-video-v1 JSON document emitted by the AI video runner. */
 export interface ObservationInput {
-  facility_id: string;
-  captured_at: string;
-  total_seats: number | null;
-  available_seats: number | null;
-  belongings_seats: number | null;
-  occupied_seats: number | null;
-  unknown_seats: number | null;
-  seated_people: number | null;
-  queue_people: number | null;
-  crowd_level: CrowdLevel | null;
-  analysis_status: AnalysisStatus;
+  schema_version: "head-video-v1";
+  input_type: "recorded_video";
+  video_name: string;
+  model_file: string;
+  coordinate_format: "xyxy_pixels";
+  confidence_threshold: number;
+  sample_interval_seconds: number;
+  timestamp_source: "decoder_relative_to_first_frame";
+  reported_fps: number | null;
+  reported_frame_count: number | null;
+  decoded_frame_count: number;
+  analyzed_frame_count: number;
+  last_decoded_video_time_seconds: number;
+  decode_check: "frame_count_matched" | "end_not_verified_by_frame_count";
+  analyzed_at: string;
+  images: FrameObservation[];
 }
 
 export interface SubscriptionInput {
