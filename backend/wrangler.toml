@@ -1,0 +1,12 @@
+name = "campus-pulse-api"
+main = "src/index.ts"
+compatibility_date = "2026-11-05"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "campus-pulse"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[secrets]
+required = ["INGEST_TOKEN", "FCM_PROJECT_ID", "FCM_CLIENT_EMAIL", "FCM_PRIVATE_KEY"]

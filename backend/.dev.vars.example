@@ -1,0 +1,7 @@
+# Copy this file to backend/.dev.vars and replace the placeholder locally.
+INGEST_TOKEN=local-development-token
+
+# Leave empty until Firebase Cloud Messaging is configured. Empty credentials skip push delivery locally.
+FCM_PROJECT_ID=""
+FCM_CLIENT_EMAIL=""
+FCM_PRIVATE_KEY=""
