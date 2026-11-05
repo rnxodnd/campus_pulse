@@ -1,16 +1,126 @@
-# React + Vite
+# Android 앱 담당 업무
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**담당: 김민정 — 공유된 기획서 초안 기준**
 
-Currently, two official plugins are available:
+5공학관 식당의 **탐지 머리 수 기반 혼잡도와 변화 알림**을 보여주는 Android 앱을 담당합니다. 기존 `frontend` 폴더명을 유지합니다. 현재 이 폴더에는 안내 문서만 있으며 앱 프로젝트·UI·API 연결·푸시·배포는 구현하지 않았습니다. 프레임워크와 개발 도구도 아직 선정하지 않았습니다.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- [프로젝트 전체 안내](../README.md)
+- [Backend 담당 업무](../backend/README.md)
+- [AI 담당 업무](../ai/README.md)
+- [실제 영상 입력·JSON 계약](../docs/head_video_input.md)
 
-## React Compiler
+## 현재 흐름과 앱의 위치
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```text
+아이폰 17 녹화 영상 → Mac M4 로컬 분석
+                    → 영상 내 5초 간격 head_count + detections
+                    → 완료 후 JSON 파일 하나
 
-## Expanding the ESLint configuration
+이후 구현할 연결:
+Backend 필드 추출·혼잡도 계산 → Android 현황 조회·변화 알림
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+아이폰은 영상 촬영 장비이고 서비스 클라이언트는 Android입니다. AI 결과는 현재 **Mac의 로컬 폴더에 저장된 파일**입니다. 병합된 백엔드에는 JSON 수신·D1 저장·조회·FCM 발송 초안 코드가 있지만, **구좌석 계약이므로 `head-video-v1`과 직접 연결되지 않습니다.** 영상 업로드, AI 결과 전달·머리 수 계약 연결, 앱 조회와 재생 동기화는 미구현입니다.
+
+Worker 번들 dry-run은 성공했지만 DB·API 통합·실기기 푸시는 아직 검증하지 않았습니다. 앱이 바로 사용할 수 있는 운영 서비스로 가정하지 않습니다.
+
+5초는 영상 안에서 분석할 시점을 고르는 간격입니다. 앱이 실제 시간 5초마다 새로운 상태를 받거나 영상을 그 간격으로 재생하는 기능이 완성됐다는 의미가 아닙니다. 앱 갱신 방식과 녹화 결과 시연 방식은 백엔드와 합의해야 합니다.
+
+## 담당 범위와 필요한 정보
+
+목표는 앱이 **백엔드에서 머리 수로 계산한 혼잡도**를 표시하는 것입니다. 현재 백엔드는 입력된 `crowd_level`을 그대로 저장하므로 계산 기능이 추가돼야 합니다. 앱에서 별도의 임계값을 적용하거나 여러 프레임의 머리 수를 합산하지 않습니다. 머리 수를 300으로 나눈 좌석 점유율도 만들지 않습니다.
+
+아래는 앱에 필요한 정보 목록이며 **확정된 API 응답이나 UI 설계가 아닙니다.**
+
+| 필요한 정보 | 표시 원칙 |
+| --- | --- |
+| 식당과 관측 범위 | 5공학관 식당의 어느 구도가 분석됐는지 구분 |
+| 해당 프레임의 탐지 머리 수 | 실제 인원 추정치라는 한계를 유지하고 부분 구역을 전체 인원으로 확대하지 않음 |
+| 혼잡 단계 | 원활·보통·혼잡·확인 불가. 임계값은 미정이며 서버와 합의한 결과 사용 |
+| 결과의 시각 | 영상 상대시각, 분석 완료시각과 최신 수신 상태를 혼동하지 않음 |
+| 데이터 종류 | 녹화 분석·시연 결과임을 표시하고 현재 실시간 상태로 표현하지 않음 |
+| 조회 상태 | 로딩·미수신·실패·오래된 결과를 구분 |
+| 알림 설정 | 켜기/끄기, 완화·악화·양방향 설정과 Android 권한 상태를 구분 |
+
+색상만으로 단계를 구분하지 않고 상태명을 함께 제공합니다. 상세 `detections`와 원본 영상의 앱 제공 여부는 미정이며 현재 기능으로 가정하지 않습니다.
+
+## AI JSON과 앱 응답의 구분
+
+현재 AI 결과는 [문서화된 `head-video-v1`](../docs/head_video_input.md)입니다. 프레임별 `images[].head_count`와 `detections`를 포함하고, 분석을 완료한 뒤 파일 하나로 생성됩니다.
+
+- `video_time_seconds`는 영상 시작 기준 상대시각입니다. 실제 촬영 날짜·시각이 아닙니다.
+- `analyzed_at`은 결과 생성시각입니다. 해당 장면이 현재 촬영됐다는 뜻이 아닙니다.
+- `video_name`은 파일명이며 고유 영상 ID가 아닙니다.
+- 시설 ID, `run_id`, 혼잡 단계는 이 JSON에 없습니다. 백엔드에서 관리할 메타데이터와 계산 결과로 별도 설계해야 합니다.
+- 앱이 이 상세 JSON을 곧바로 내려받는 구조인지도 확정하지 않았습니다. 앱 응답 필드·주소·인증·갱신 방식은 백엔드와 합의합니다.
+
+## 병합된 백엔드와의 연결 상태
+
+현행 구현을 확인할 경로는 다음과 같습니다. **머리 수용 응답 계약이 완성됐다는 의미가 아닙니다.** 자세한 구형 JSON·설정·명령은 [Backend README](../backend/README.md)에 있습니다.
+
+| 현행 endpoint | 앱에서 알아야 할 현재 상태 |
+| --- | --- |
+| `GET /api/facilities` | 시설 목록·최신 관측. 응답은 구좌석 필드 기준 |
+| `GET /api/facilities/:facility_id` | 시설 상세·최신 관측. 현재 등록 ID는 `eng5_cafeteria` |
+| `POST /api/subscriptions` | `{ "facility_id": "eng5_cafeteria", "fcm_token": "..." }`으로 등록 |
+| `DELETE /api/subscriptions` | 같은 본문으로 구독 해제 |
+
+조회에는 `data_status`의 `current`·`delayed`·`error`·`unknown` 구분이 있고, 관측이 없는 상세 응답은 `observation: null`입니다. 현행 코드의 오래된 정보 기준은 5분입니다. 녹화 상대시각과 최신 머리 수 정책을 연결하면서 함께 검토해야 합니다.
+
+`POST /api/observations`는 AI 수신용이며 서버 수신 토큰이 필요합니다. 앱에 이 비밀값을 넣지 않습니다. 현재 강제되는 좌석 필드로 머리 수를 대체해서 보내거나 구형 응답을 최신 머리 수 응답으로 해석하지 않습니다.
+
+## 상태 표시 원칙
+
+| 상황 | 처리 원칙 |
+| --- | --- |
+| 최초 응답 전 또는 관측 없음 | 대기·확인 불가로 표시하고 0명을 만들지 않음 |
+| 유효한 프레임에서 머리 0개 탐지 | 0개 탐지 결과로 표시. 영상 실패와 구분 |
+| 임계값 미확정 또는 결과 무효 | 혼잡 단계를 임의로 정하지 않음 |
+| 연결 중단·오래된 결과 | 마지막 값을 보여준다면 해당 시각과 지연 상태를 함께 표시 |
+| 녹화 결과 조회·시연 | 녹화 영상 내 시점과 분석 결과임을 명시 |
+| 일부 구역만 촬영 | 관측 범위를 표시하고 식당 전체 인원으로 단정하지 않음 |
+
+머리 수가 맞아도 개별 머리의 누락과 오탐이 상쇄됐을 수 있습니다. 앱에 모델 정확도가 검증됐다는 표현을 임의로 추가하지 않습니다.
+
+## 혼잡도 변화 알림
+
+앱을 보고 있지 않을 때도 선택한 방향의 혼잡도 변화를 받는 기능을 계획합니다. **Android 수신 구현은 아직 없습니다.** 백엔드 초안에는 직전·현재 상태가 `OK`일 때 `HIGH → MEDIUM/LOW`만 FCM으로 보내는 코드가 있습니다. 아래 상승·하락·양방향 설정 전체가 구현된 것은 아닙니다.
+
+| 수신 설정 | 대상 변화 |
+| --- | --- |
+| 원활해질 때 | 혼잡 → 보통, 보통 → 원활, 혼잡 → 원활 |
+| 혼잡해질 때 | 원활 → 보통, 보통 → 혼잡, 원활 → 혼잡 |
+| 양방향 | 두 방향의 유효한 변화 |
+| 끄기 | 해당 수신자에게 알림 발송하지 않음 |
+
+단계 변화 판정·변동 안정화·발송 대상 결정은 백엔드 역할입니다. 현행 구독은 등록·해제만 지원하며 수신 방향 필드는 없습니다. 앱은 권한 요청, 향후 방향 설정 동기화, 알림 수신·표시와 알림 탭 후 조회를 담당합니다.
+
+- 앱 설정과 Android 시스템 알림 허용 상태를 별도로 관리합니다. 권한을 거부해도 현황 조회는 사용할 수 있어야 합니다.
+- 설정 변경 요청에 실패하면 저장 완료로 표시하지 않습니다. 기기 등록 토큰의 등록·갱신·삭제 방식은 백엔드와 협의합니다.
+- 최초 관측·확인 불가·오래된 데이터는 단계 변화로 취급하지 않습니다. 관측 복구 후 비교 기준도 서버와 맞춥니다.
+- 두 단계를 직접 이동해도 하나의 변화로 처리합니다. 이벤트 중복·늦게 도착한 알림의 처리 기준은 미정입니다.
+- 알림을 탭하면 최신 결과를 다시 조회합니다. 과거 알림 값으로 현재 상태를 덮어쓰지 않습니다.
+- 녹화 파일에 있는 과거 변화를 실제 현재 상황의 푸시로 표시하지 않습니다. 시연용 재생·알림 방식은 별도 합의 대상입니다.
+
+[FCM](https://firebase.google.com/docs/cloud-messaging) 서버 발송·토큰 등록/삭제 코드가 병합됐습니다. 현재 알림 문구와 `type: seats_available`는 구좌석 기준이므로 머리 수 혼잡도에 맞춘 계약 수정이 필요합니다. Android 설정·실기기 수신 검증은 별도 작업이며 즉시 도착이나 모든 앱 상태에서의 수신을 보장하지 않습니다. 서버 발송 키·AI 수신 비밀값·Cloudflare 토큰은 앱 코드나 배포 파일에 넣지 않습니다.
+
+## 작업 순서와 개발 환경
+
+1. Android 프레임워크·개발 도구와 실기기 테스트 방법을 선정합니다.
+2. 백엔드의 구좌석 계약을 머리 수용으로 정합화하고, 필요한 정보·시각·녹화 표시·미수신·오류·조회 방식을 합의합니다.
+3. 합의된 범위의 앱 화면과 조회 연결을 구현합니다. 개발용 예시 데이터는 실제 관측과 구분합니다.
+4. 수신 설정·시스템 권한·푸시와 알림 탭 후 재조회를 연결합니다.
+5. 녹화 분석 결과부터 앱 표시까지 통합 확인한 뒤 빌드·배포 방법을 정리합니다.
+
+Python 가상환경은 AI용입니다. 루트의 `npm ci`, `npm run cf:version`, `npm run api:dev` 등은 백엔드 준비·실행 명령이며 Android 앱을 빌드하지 않습니다. 백엔드 실행에는 [별도 D1·환경변수 설정](../backend/README.md)이 필요합니다. **앱 설치·실행·빌드 명령과 APK 배포 방식은 아직 없습니다.** Cloudflare 백엔드 배포와 Android 앱 배포는 별도입니다.
+
+## 완료 기준
+
+- [ ] 식당의 탐지 머리 수·관측 범위와 서버가 계산한 혼잡도를 표시한다.
+- [ ] 녹화 상대시각·분석 완료시각·현재 수신 상태를 구분한다.
+- [ ] 최초 대기·실패·오래된 결과를 0명으로 바꾸지 않는다.
+- [ ] 실제 백엔드 조회와 Android 표시를 연결한다.
+- [ ] 알림 켜기/끄기·양방향 설정과 시스템 권한 상태를 구분한다.
+- [ ] 단계 직접 이동·최초 관측·확인 불가·복구·중복·지연 알림을 검증한다.
+- [ ] Android 실기기에서 백그라운드 수신과 알림 탭 후 최신 조회를 확인한다.
+- [ ] 검증한 개발 도구와 설치·실행·빌드·배포 방법을 문서에 기록한다.
