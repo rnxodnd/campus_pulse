@@ -4,8 +4,7 @@ import Header from '../components/Header';
 import { useSettings } from '../context/settings';
 
 export default function SettingsScreen() {
-  const { settings, setSettings } = useSettings();
-  const update = (key, value) => setSettings((current) => ({ ...current, [key]: value }));
+  const { settings, updateSettings, pushStatus } = useSettings();
   return (
     <SafeAreaView style={styles.page}>
       <StatusBar barStyle="dark-content" />
@@ -14,17 +13,17 @@ export default function SettingsScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>자리 알림</Text>
           <Text style={styles.bodyText}>식당에 이용 가능한 자리가 생기면 알림을 받습니다.</Text>
-          <View style={styles.switchRow}><Text style={styles.rowTitle}>알림 받기</Text><Switch value={settings.enabled} onValueChange={(value) => update('enabled', value)} /></View>
+          <View style={styles.switchRow}><Text style={styles.rowTitle}>알림 받기</Text><Switch value={settings.enabled} onValueChange={(value) => updateSettings({ enabled: value })} /></View>
         </View>
         <Text style={styles.sectionTitle}>알림 받을 상황</Text>
         <View style={styles.card}>
-          <View style={styles.switchRow}><View style={styles.flexText}><Text style={styles.rowTitle}>보통 또는 여유로 바뀔 때</Text><Text style={styles.bodyText}>혼잡도가 낮아지면 알려드려요.</Text></View><Switch value={settings.medium} onValueChange={(value) => update('medium', value)} disabled={!settings.enabled} /></View>
+          <View style={styles.switchRow}><View style={styles.flexText}><Text style={styles.rowTitle}>포화 → 보통으로 낮아질 때</Text><Text style={styles.bodyText}>감지 인원이 101명 이상에서 22~100명으로 바뀌면 알려드려요.</Text></View><Switch value={settings.notifyOnMedium} onValueChange={(value) => updateSettings({ notifyOnMedium: value })} disabled={!settings.enabled} /></View>
           <View style={styles.rowDivider} />
-          <View style={styles.switchRow}><View style={styles.flexText}><Text style={styles.rowTitle}>좌석이 생길 때</Text><Text style={styles.bodyText}>빈자리가 확인되면 알려드려요.</Text></View><Switch value={settings.low} onValueChange={(value) => update('low', value)} disabled={!settings.enabled} /></View>
+          <View style={styles.switchRow}><View style={styles.flexText}><Text style={styles.rowTitle}>보통 또는 포화 → 여유로 낮아질 때</Text><Text style={styles.bodyText}>감지 인원이 22명 이상에서 0~21명으로 바뀌면 알려드려요.</Text></View><Switch value={settings.notifyOnLow} onValueChange={(value) => updateSettings({ notifyOnLow: value })} disabled={!settings.enabled} /></View>
         </View>
         <View style={styles.noticeCard}>
-          <Text style={styles.noticeTitle}>푸시 알림 연동 준비 중</Text>
-          <Text style={styles.bodyText}>현재는 실행 중인 화면 설정만 반영됩니다. 서버의 혼잡도 판정과 Android 푸시 전송이 연결되면 실제 알림을 받을 수 있습니다.</Text>
+          <Text style={styles.noticeTitle}>푸시 알림 상태</Text>
+          <Text style={styles.bodyText}>{pushStatus}</Text>
         </View>
         <Pressable style={styles.linkCard} onPress={() => router.push('/history')}><Text style={styles.rowTitle}>알림 내역 보기</Text><Text style={styles.chevron}>›</Text></Pressable>
       </ScrollView>

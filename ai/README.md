@@ -15,7 +15,7 @@
 | CVAT 라벨링·외부 실내 자료 변환·장면별 분리 | 머리 박스, 데이터 manifest, train/val/test 분리 근거 |
 | YOLOv8n 미세조정·작은 머리 검증 | 가중치, 실행 설정, 누락·오탐과 인원 오차 |
 | 녹화 영상 입력·5초 간격 샘플링 | 프레임별 상세 JSON, 디코딩·시각 검사 결과 |
-| 백엔드 연동 자료 제공 | 실제 JSON 샘플, 필드 의미, 실패 조건·관측 범위 |
+| 백엔드 연동 | 전체 분석이 끝난 뒤 선택적으로 JSON 파일을 API에 업로드 |
 
 ## 현재 데이터와 학습 상태
 
@@ -79,14 +79,17 @@ python ai/predict_head_video.py \
   --output runs/head/video_demo/heads.json \
   --interval 5 \
   --tile-size 2048 --tile-overlap 0.2 \
-  --imgsz 1280 --conf 0.10 --iou 0.7
+  --imgsz 1280 --conf 0.10 --iou 0.7 \
+  --upload --api-url "$CAMPUS_PULSE_API_URL"
 ```
+
+업로드하려면 실행 환경에 `CAMPUS_PULSE_API_URL`과 백엔드 운영자가 발급한 토큰을 `INGEST_TOKEN` 또는 `CAMPUS_PULSE_INGEST_TOKEN`으로 설정합니다. 토큰은 소스 코드나 JSON 파일, Git에 기록하지 않습니다. `--upload`는 영상 분석과 JSON 저장이 성공한 뒤 해당 JSON 전체를 한 번 POST합니다. 업로드가 필요 없는 경우 옵션을 빼면 기존처럼 로컬 파일만 만듭니다.
 
 - 기본 장치는 MPS입니다. CPU 실행이 필요하면 `--device cpu`를 명시합니다.
 - 위 타일 설정은 식당 검증 사진에서 선택했습니다. 다른 해상도의 실제 영상에서는 정확도와 처리 시간을 다시 확인합니다.
 - `--output`은 존재하는 부모 폴더 아래의 새 JSON 파일명이어야 합니다.
 - 영상 내 0·5·10초 등의 경계에 도달한 첫 프레임을 분석하며 실제 프레임 시각을 기록합니다.
-- 최종 JSON은 전체 처리 완료 후 생성됩니다. 실제 5초 간격 전송·업로드 API·재생 동기화는 구현돼 있지 않습니다.
+- 최종 JSON은 전체 처리 완료 후 생성됩니다. 따라서 `--upload`도 영상 분석이 끝난 다음 결과 전체를 전송하며, 실제 5초 간격 전송이나 라이브 카메라 분석은 구현돼 있지 않습니다.
 
 출력 스키마는 `head-video-v1`입니다. 핵심 값은 **`images[].head_count`**, 영상 기준 시각은 **`images[].video_time_seconds`**이며 `detections`의 좌표·신뢰도 등도 유지합니다. 백엔드가 앱에 필요한 필드를 추출합니다. AI 결과에는 혼잡 단계·시설 ID·실행 ID가 아직 없으며, 별도 연동 메타데이터와 응답 계약으로 관리합니다. 전체 필드는 [영상 출력 명세](../docs/head_video_input.md)를 기준으로 합니다.
 
@@ -136,9 +139,9 @@ python ai/train_head_smoke.py \
 
 `summary.json`은 학습 평가 기록이며 서비스 JSON과 다릅니다. 평가 예측 수는 `validation_predictions[].predicted_heads`, 사진·영상 출력 수는 `images[].head_count`입니다. 첫 학습 기록은 [시험 학습 결과](../docs/head_smoke_result.md), 상세 학습 설명은 [training_mac.txt](../docs/training_mac.txt)를 참고합니다.
 
-## 병합된 백엔드와 연동할 때
+## 백엔드와 연동
 
-`develop`의 백엔드 1차 구현이 로컬 `main`에 들어왔습니다. 현재 `POST /api/observations`는 이전 좌석 데이터와 입력 `crowd_level`을 요구하므로 **이 AI의 상세 JSON을 그대로 보내면 거절됩니다.** 머리 수 계약·단계 계산·녹화 시각 처리는 백엔드 담당자가 변경합니다. AI에서 없는 좌석 값을 만들어 맞추거나 녹화 시각을 현재 시각으로 바꾸지 않습니다. 현재 API와 설정은 [백엔드 안내](../backend/README.md)를 참고합니다.
+`POST /api/observations`는 이 실행기가 출력하는 `head-video-v1` JSON을 받습니다. Worker는 마지막 프레임의 검출 머리 수로 혼잡도를 계산하며, 0–21명은 여유, 22–100명은 보통, 101명 이상은 포화입니다. 녹화 영상은 전체 처리가 끝난 다음 한 번 업로드되므로 라이브 상태로 해석하면 안 됩니다. API 설정과 응답 항목은 [백엔드 안내](../backend/README.md)를 참고합니다.
 
 ## 다음 작업과 완료 기준
 

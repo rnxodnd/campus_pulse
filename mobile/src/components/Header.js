@@ -1,14 +1,18 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-/** @param {{ title: string, onBack?: () => void, onAlerts?: () => void, light?: boolean }} props */
-export default function Header({ title, onBack, onAlerts, light = false }) {
+/** @param {{ title: string, onBack?: () => void, onMenu?: () => void, onAlerts?: () => void, light?: boolean }} props */
+export default function Header({ title, onBack, onMenu, onAlerts, light = false }) {
   return (
     <View style={styles.header}>
       {onBack ? (
         <Pressable accessibilityRole="button" accessibilityLabel="뒤로" onPress={onBack} style={styles.iconButton}>
           <Text style={styles.iconText}>‹</Text>
         </Pressable>
-      ) : <View style={styles.iconButton}><Text style={styles.iconText}>☰</Text></View>}
+      ) : (
+        <Pressable accessibilityRole="button" accessibilityLabel="공간 메뉴 열기" onPress={onMenu} style={styles.iconButton}>
+          <Text style={styles.iconText}>☰</Text>
+        </Pressable>
+      )}
       <Text style={[styles.headerTitle, light && styles.lightText]}>{title}</Text>
       {!onBack ? (
         <Pressable accessibilityRole="button" accessibilityLabel="알림 설정" onPress={onAlerts} style={styles.iconButton}>

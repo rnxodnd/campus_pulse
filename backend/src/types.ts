@@ -30,7 +30,26 @@ export interface ObservationInput {
   images: FrameObservation[];
 }
 
+/** Compact AI payload: observations only need video time and detected head count. */
+export interface CompactObservationInput {
+  facility_id?: string;
+  analyzed_at?: string;
+  source_analysis_id?: string;
+  observations: Array<{
+    frame_index: number;
+    video_time_seconds: number;
+    head_count: number;
+  }>;
+}
+
 export interface SubscriptionInput {
   facility_id: string;
-  fcm_token: string;
+  push_token: string;
+  notify_on_medium: boolean;
+  notify_on_low: boolean;
+}
+
+export interface AlertHistoryInput {
+  facility_id: string;
+  push_token: string;
 }
