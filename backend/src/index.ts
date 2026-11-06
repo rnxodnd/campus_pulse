@@ -1,7 +1,7 @@
 import { getFacility, getHeadObservations, listFacilities } from "./facilities";
 import { json } from "./http";
 import { ingest } from "./observations";
-import { subscription } from "./subscriptions";
+import { alertHistory, subscription } from "./subscriptions";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -16,6 +16,8 @@ export default {
     if (request.method === "POST" && url.pathname === "/api/observations") return ingest(request, env);
     if (request.method === "POST" && url.pathname === "/api/subscriptions") return subscription(request, env);
     if (request.method === "DELETE" && url.pathname === "/api/subscriptions") return subscription(request, env, true);
+    if (request.method === "POST" && url.pathname === "/api/alerts/history") return alertHistory(request, env);
+    if (request.method === "DELETE" && url.pathname === "/api/alerts/history") return alertHistory(request, env, true);
     return json({ error: "not_found" }, 404);
   },
 };

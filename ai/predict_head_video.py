@@ -9,6 +9,8 @@ import json
 import math
 import os
 import tempfile
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,6 +86,35 @@ def write_results(output, metadata, records, finish_metadata):
             temporary.unlink(missing_ok=True)
 
 
+def upload_results(output, api_url, token):
+    """Send the completed result document to the authenticated Worker endpoint."""
+    if not token:
+        raise RuntimeError("CAMPUS_PULSE_INGEST_TOKEN is required when --upload is used.")
+    endpoint = api_url.rstrip("/") + "/api/observations"
+    request = urllib.request.Request(
+        endpoint,
+        data=output.read_bytes(),
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = response.read().decode("utf-8")
+            if response.status not in (200, 201):
+                raise RuntimeError(f"API upload failed with HTTP {response.status}: {payload}")
+            print(f"upload_status={response.status} response={payload}", flush=True)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"API upload failed with HTTP {error.code}: {detail}") from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"API upload failed: {error.reason}") from error
+
+
+def ingest_token_from_environment():
+    """Accept the worker binding name or the AI-specific documented alias."""
+    return os.environ.get("CAMPUS_PULSE_INGEST_TOKEN") or os.environ.get("INGEST_TOKEN", "")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True, type=Path, help="Existing local head-only .pt checkpoint")
@@ -97,6 +128,9 @@ def main():
     parser.add_argument("--max-det", type=int, default=300)
     parser.add_argument("--tile-size", type=int, default=0, help="Decoded-frame tile side; 0 disables tiling")
     parser.add_argument("--tile-overlap", type=float, default=0.2)
+    parser.add_argument("--upload", action="store_true", help="POST the completed JSON to the Campus Pulse API")
+    parser.add_argument("--api-url", default=os.environ.get("CAMPUS_PULSE_API_URL", ""),
+                        help="API base URL; defaults to CAMPUS_PULSE_API_URL")
     args = parser.parse_args()
     if not math.isfinite(args.interval) or args.interval <= 0:
         parser.error("--interval must be positive and finite.")
@@ -104,6 +138,10 @@ def main():
         parser.error("Use positive imgsz/max-det and conf/iou within [0, 1].")
     if args.tile_size < 0 or not 0 <= args.tile_overlap < 1:
         parser.error("Use tile-size >= 0 and tile-overlap within [0, 1).")
+    if args.upload and not args.api_url.strip():
+        parser.error("--upload requires --api-url or CAMPUS_PULSE_API_URL.")
+    if args.upload and not ingest_token_from_environment():
+        parser.error("--upload requires INGEST_TOKEN or CAMPUS_PULSE_INGEST_TOKEN in the environment.")
     model, source, output = (p.expanduser().absolute() for p in (args.model, args.source, args.output))
     if model.is_symlink() or not model.is_file() or model.suffix.lower() != ".pt":
         parser.error("--model must be an existing local .pt file, not a symlink.")
@@ -155,6 +193,8 @@ def main():
         write_results(output, metadata, records(), lambda: stats)
     finally:
         capture.release()
+    if args.upload:
+        upload_results(output, args.api_url, ingest_token_from_environment())
     print(json.dumps({"output": str(output), "sample_interval_seconds": args.interval,
                       "decoded_frame_count": stats["decoded_frame_count"]}, ensure_ascii=False))
 

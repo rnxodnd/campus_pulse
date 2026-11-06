@@ -1,4 +1,4 @@
-import type { ObservationInput, SubscriptionInput } from "./types";
+import type { AlertHistoryInput, CompactObservationInput, ObservationInput, SubscriptionInput } from "./types";
 
 export function validateObservation(value: unknown): ObservationInput | null {
   if (!value || typeof value !== "object") return null;
@@ -36,7 +36,7 @@ export function validateObservation(value: unknown): ObservationInput | null {
     if (typeof frame.image_name !== "string" || !frame.image_name.trim() || frame.image_name.length > 512) return null;
     if (!Number.isInteger(frame.image_width) || (frame.image_width as number) <= 0 ||
         !Number.isInteger(frame.image_height) || (frame.image_height as number) <= 0) return null;
-    if (!Number.isInteger(frame.head_count) || (frame.head_count as number) < 0 || !Array.isArray(frame.detections) ||
+    if (!Number.isSafeInteger(frame.head_count) || (frame.head_count as number) < 0 || !Array.isArray(frame.detections) ||
         frame.detections.length !== frame.head_count) return null;
     previousFrameIndex = frame.frame_index as number;
     previousVideoTime = frame.video_time_seconds;
@@ -45,10 +45,70 @@ export function validateObservation(value: unknown): ObservationInput | null {
   return input as unknown as ObservationInput;
 }
 
+export function validateCompactObservation(value: unknown): CompactObservationInput | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  if (input.facility_id !== undefined && input.facility_id !== "eng5_cafeteria") return null;
+  const analysis = input.analysis === undefined ? undefined : input.analysis;
+  if (analysis !== undefined && (!analysis || typeof analysis !== "object" || Array.isArray(analysis))) return null;
+  const analysisMetadata = (analysis ?? {}) as Record<string, unknown>;
+  const analyzedAt = input.analyzed_at ?? analysisMetadata.analyzed_at;
+  const sourceAnalysisId = analysisMetadata.analysis_id ?? input.analysis_id;
+  if (analyzedAt !== undefined &&
+      (typeof analyzedAt !== "string" || !Number.isFinite(Date.parse(analyzedAt)))) return null;
+  if (sourceAnalysisId !== undefined &&
+      (typeof sourceAnalysisId !== "string" || !sourceAnalysisId.trim() || sourceAnalysisId.length > 255)) return null;
+  if (analysisMetadata.analyzed_frame_count !== undefined &&
+      (!Number.isInteger(analysisMetadata.analyzed_frame_count) ||
+       analysisMetadata.analyzed_frame_count !== (Array.isArray(input.observations) ? input.observations.length : -1))) return null;
+  if (!Array.isArray(input.observations) || input.observations.length === 0 || input.observations.length > 5000) return null;
+
+  let previousFrameIndex = -1;
+  let previousVideoTime = -1;
+  const observations: CompactObservationInput["observations"] = [];
+  for (const rawObservation of input.observations) {
+    if (!rawObservation || typeof rawObservation !== "object") return null;
+    const observation = rawObservation as Record<string, unknown>;
+    const frameIndex = observation.frame_index === undefined ? previousFrameIndex + 1 : observation.frame_index;
+    if (!Number.isSafeInteger(frameIndex) || (frameIndex as number) < 0 || (frameIndex as number) <= previousFrameIndex) return null;
+    if (typeof observation.video_time_seconds !== "number" || !Number.isFinite(observation.video_time_seconds) ||
+        observation.video_time_seconds < 0 || observation.video_time_seconds <= previousVideoTime ||
+        !Number.isSafeInteger(observation.head_count) || (observation.head_count as number) < 0) return null;
+    previousFrameIndex = frameIndex as number;
+    previousVideoTime = observation.video_time_seconds;
+    observations.push({
+      frame_index: frameIndex as number,
+      video_time_seconds: observation.video_time_seconds,
+      head_count: observation.head_count as number,
+    });
+  }
+
+  return {
+    ...(input.facility_id === undefined ? {} : { facility_id: input.facility_id as string }),
+    ...(analyzedAt === undefined ? {} : { analyzed_at: analyzedAt as string }),
+    ...(sourceAnalysisId === undefined ? {} : { source_analysis_id: sourceAnalysisId as string }),
+    observations,
+  };
+}
+
 export function validateSubscription(value: unknown): SubscriptionInput | null {
   if (!value || typeof value !== "object") return null;
   const input = value as Record<string, unknown>;
   if (typeof input.facility_id !== "string" || !input.facility_id.trim() ||
-      typeof input.fcm_token !== "string" || !input.fcm_token.trim() || input.fcm_token.length > 4096) return null;
-  return { facility_id: input.facility_id, fcm_token: input.fcm_token };
+      typeof input.push_token !== "string" || !input.push_token.trim() || input.push_token.length > 4096 ||
+      typeof input.notify_on_medium !== "boolean" || typeof input.notify_on_low !== "boolean") return null;
+  return {
+    facility_id: input.facility_id,
+    push_token: input.push_token,
+    notify_on_medium: input.notify_on_medium,
+    notify_on_low: input.notify_on_low,
+  };
+}
+
+export function validateAlertHistory(value: unknown): AlertHistoryInput | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as Record<string, unknown>;
+  if (typeof input.facility_id !== "string" || !input.facility_id.trim() ||
+      typeof input.push_token !== "string" || !input.push_token.trim() || input.push_token.length > 4096) return null;
+  return { facility_id: input.facility_id, push_token: input.push_token };
 }
